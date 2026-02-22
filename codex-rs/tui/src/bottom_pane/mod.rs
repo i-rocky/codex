@@ -19,6 +19,7 @@ use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::queued_user_messages::QueuedUserMessages;
 use crate::bottom_pane::unified_exec_footer::UnifiedExecFooter;
+use crate::discord_approval::DiscordApprovalBridge;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::render::renderable::FlexRenderable;
@@ -171,6 +172,7 @@ pub(crate) struct BottomPane {
     queued_user_messages: QueuedUserMessages,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    discord_bridge: DiscordApprovalBridge,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -182,6 +184,7 @@ pub(crate) struct BottomPaneParams {
     pub(crate) disable_paste_burst: bool,
     pub(crate) animations_enabled: bool,
     pub(crate) skills: Option<Vec<SkillMetadata>>,
+    pub(crate) enable_discord: bool,
 }
 
 impl BottomPane {
@@ -195,6 +198,7 @@ impl BottomPane {
             disable_paste_burst,
             animations_enabled,
             skills,
+            enable_discord,
         } = params;
         let mut composer = ChatComposer::new(
             has_input_focus,
@@ -208,7 +212,7 @@ impl BottomPane {
         Self {
             composer,
             view_stack: Vec::new(),
-            app_event_tx,
+            app_event_tx: app_event_tx.clone(),
             frame_requester,
             has_input_focus,
             enhanced_keys_supported,
@@ -221,6 +225,7 @@ impl BottomPane {
             animations_enabled,
             context_window_percent: None,
             context_window_used_tokens: None,
+            discord_bridge: DiscordApprovalBridge::new(enable_discord, app_event_tx.clone()),
         }
     }
 
@@ -791,9 +796,31 @@ impl BottomPane {
         };
 
         // Otherwise create a new approval modal overlay.
-        let modal = ApprovalOverlay::new(request, self.app_event_tx.clone(), features.clone());
+        let modal = ApprovalOverlay::new(
+            request,
+            self.app_event_tx.clone(),
+            features.clone(),
+            self.discord_bridge.clone(),
+        );
         self.pause_status_timer_for_modal();
         self.push_view(Box::new(modal));
+    }
+
+    pub(crate) fn handle_discord_approval_shortcut(
+        &mut self,
+        request_key: &str,
+        shortcut: char,
+    ) -> bool {
+        let Some(view) = self.view_stack.last_mut() else {
+            return false;
+        };
+        let handled = view.try_handle_discord_shortcut(request_key, shortcut);
+        if handled && view.is_complete() {
+            self.view_stack.clear();
+            self.on_active_view_complete();
+            self.request_redraw();
+        }
+        handled
     }
 
     /// Called when the agent requests user input.
@@ -1035,6 +1062,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
         pane.push_approval_request(exec_request(), &features);
         assert_eq!(CancellationEvent::Handled, pane.on_ctrl_c());
@@ -1058,6 +1086,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         // Create an approval modal (active view).
@@ -1092,6 +1121,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         // Start a running task so the status indicator is active above the composer.
@@ -1159,6 +1189,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         // Begin a task: show initial status.
@@ -1186,6 +1217,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         // Activate spinner (status view replaces composer) with no live ring.
@@ -1217,6 +1249,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1240,6 +1273,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1269,6 +1303,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1300,6 +1335,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1328,6 +1364,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1355,6 +1392,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_remote_image_urls(vec![
@@ -1384,6 +1422,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_remote_image_urls(vec!["https://example.com/one.png".to_string()]);
@@ -1417,6 +1456,7 @@ mod tests {
                 path: PathBuf::from("test-skill"),
                 scope: SkillScope::User,
             }]),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1455,6 +1495,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1490,6 +1531,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         pane.set_task_running(true);
@@ -1546,6 +1588,7 @@ mod tests {
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
+            enable_discord: false,
         });
 
         let on_ctrl_c_calls = Rc::new(Cell::new(0));

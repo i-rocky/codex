@@ -54,6 +54,11 @@ pub(crate) trait BottomPaneView: Renderable {
         false
     }
 
+    /// Try to handle a Discord approval shortcut by request key.
+    fn try_handle_discord_shortcut(&mut self, _request_key: &str, _shortcut: char) -> bool {
+        false
+    }
+
     /// Try to handle approval request; return the original value if not
     /// consumed.
     fn try_consume_approval_request(

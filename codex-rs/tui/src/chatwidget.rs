@@ -455,6 +455,7 @@ pub(crate) struct ChatWidgetInit {
     // Shared latch so we only warn once about invalid status-line item IDs.
     pub(crate) status_line_invalid_items_warned: Arc<AtomicBool>,
     pub(crate) otel_manager: OtelManager,
+    pub(crate) enable_discord: bool,
 }
 
 #[derive(Default)]
@@ -2482,6 +2483,12 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn handle_discord_approval_shortcut(&mut self, request_key: &str, shortcut: char) {
+        let _ = self
+            .bottom_pane
+            .handle_discord_approval_shortcut(request_key, shortcut);
+    }
+
     pub(crate) fn handle_request_user_input_now(&mut self, ev: RequestUserInputEvent) {
         self.flush_answer_stream_with_separator();
         self.bottom_pane.push_user_input_request(ev);
@@ -2615,6 +2622,7 @@ impl ChatWidget {
             model,
             status_line_invalid_items_warned,
             otel_manager,
+            enable_discord,
         } = common;
         let model = model.filter(|m| !m.trim().is_empty());
         let mut config = config;
@@ -2663,6 +2671,7 @@ impl ChatWidget {
                 disable_paste_burst: config.disable_paste_burst,
                 animations_enabled: config.animations,
                 skills: None,
+                enable_discord,
             }),
             active_cell,
             active_cell_revision: 0,
@@ -2786,6 +2795,7 @@ impl ChatWidget {
             model,
             status_line_invalid_items_warned,
             otel_manager,
+            enable_discord,
         } = common;
         let model = model.filter(|m| !m.trim().is_empty());
         let mut config = config;
@@ -2833,6 +2843,7 @@ impl ChatWidget {
                 disable_paste_burst: config.disable_paste_burst,
                 animations_enabled: config.animations,
                 skills: None,
+                enable_discord,
             }),
             active_cell,
             active_cell_revision: 0,
@@ -2945,6 +2956,7 @@ impl ChatWidget {
             model,
             status_line_invalid_items_warned,
             otel_manager,
+            enable_discord,
         } = common;
         let model = model.filter(|m| !m.trim().is_empty());
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
@@ -2992,6 +3004,7 @@ impl ChatWidget {
                 disable_paste_burst: config.disable_paste_burst,
                 animations_enabled: config.animations,
                 skills: None,
+                enable_discord,
             }),
             active_cell: None,
             active_cell_revision: 0,

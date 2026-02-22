@@ -36,7 +36,9 @@ fn main() {
     }
 
     if let Err(err) = try_build_vendored_bwrap() {
-        panic!("failed to compile vendored bubblewrap for Linux target: {err}");
+        println!(
+            "cargo:warning=failed to compile vendored bubblewrap for Linux target; falling back without vendored bwrap: {err}"
+        );
     }
 }
 

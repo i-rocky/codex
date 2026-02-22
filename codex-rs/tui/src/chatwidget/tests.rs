@@ -1524,6 +1524,7 @@ async fn helpers_are_available_and_do_not_panic() {
         model: Some(resolved_model),
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         otel_manager,
+        enable_discord: false,
     };
     let mut w = ChatWidget::new(init, thread_manager);
     // Basic construction sanity.
@@ -1575,6 +1576,7 @@ async fn make_chatwidget_manual(
         disable_paste_burst: false,
         animations_enabled: cfg.animations,
         skills: None,
+        enable_discord: false,
     });
     bottom.set_steer_enabled(true);
     bottom.set_collaboration_modes_enabled(cfg.features.enabled(Feature::CollaborationModes));
@@ -4114,6 +4116,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         model: Some(resolved_model.clone()),
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         otel_manager,
+        enable_discord: false,
     };
 
     let chat = ChatWidget::new(init, thread_manager);
@@ -4163,6 +4166,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         model: Some(resolved_model.clone()),
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         otel_manager,
+        enable_discord: false,
     };
 
     let chat = ChatWidget::new(init, thread_manager);

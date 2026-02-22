@@ -9,6 +9,7 @@ use crate::bottom_pane::list_selection_view::ListSelectionView;
 use crate::bottom_pane::list_selection_view::SelectionItem;
 use crate::bottom_pane::list_selection_view::SelectionViewParams;
 use crate::diff_render::DiffSummary;
+use crate::discord_approval::DiscordApprovalBridge;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell;
 use crate::key_hint;
@@ -70,10 +71,16 @@ pub(crate) struct ApprovalOverlay {
     current_complete: bool,
     done: bool,
     features: Features,
+    discord_bridge: DiscordApprovalBridge,
 }
 
 impl ApprovalOverlay {
-    pub fn new(request: ApprovalRequest, app_event_tx: AppEventSender, features: Features) -> Self {
+    pub fn new(
+        request: ApprovalRequest,
+        app_event_tx: AppEventSender,
+        features: Features,
+        discord_bridge: DiscordApprovalBridge,
+    ) -> Self {
         let mut view = Self {
             current_request: None,
             current_variant: None,
@@ -84,6 +91,7 @@ impl ApprovalOverlay {
             current_complete: false,
             done: false,
             features,
+            discord_bridge,
         };
         view.set_current(request);
         view
@@ -95,10 +103,11 @@ impl ApprovalOverlay {
 
     fn set_current(&mut self, request: ApprovalRequest) {
         self.current_request = Some(request.clone());
-        let ApprovalRequestState { variant, header } = ApprovalRequestState::from(request);
+        let ApprovalRequestState { variant, header } = ApprovalRequestState::from(request.clone());
         self.current_variant = Some(variant.clone());
         self.current_complete = false;
-        let (options, params) = Self::build_options(variant, header, &self.features);
+        let (options, params) = Self::build_options(variant.clone(), header, &self.features);
+        self.notify_discord(&request, &variant, &options);
         self.options = options;
         self.list = ListSelectionView::new(params, self.app_event_tx.clone());
     }
@@ -170,6 +179,103 @@ impl ApprovalOverlay {
         };
 
         (options, params)
+    }
+
+    fn notify_discord(
+        &self,
+        request: &ApprovalRequest,
+        variant: &ApprovalVariant,
+        options: &[ApprovalOption],
+    ) {
+        let title = match variant {
+            ApprovalVariant::Exec {
+                network_approval_context,
+                ..
+            } => network_approval_context.as_ref().map_or_else(
+                || "Would you like to run the following command?".to_string(),
+                |network_approval_context| {
+                    format!(
+                        "Do you want to approve network access to \"{}\"?",
+                        network_approval_context.host
+                    )
+                },
+            ),
+            ApprovalVariant::ApplyPatch { .. } => {
+                "Would you like to make the following edits?".to_string()
+            }
+            ApprovalVariant::McpElicitation { server_name, .. } => {
+                format!("{server_name} needs your approval.")
+            }
+        };
+        let details = match request {
+            ApprovalRequest::Exec {
+                command, reason, ..
+            } => {
+                let mut details = String::new();
+                if let Some(reason) = reason
+                    && !reason.is_empty()
+                {
+                    details.push_str(&format!("Reason: {reason}\n\n"));
+                }
+                details.push_str(&format!("$ {}", strip_bash_lc_and_escape(command)));
+                details
+            }
+            ApprovalRequest::ApplyPatch {
+                reason, changes, ..
+            } => {
+                let mut details = String::new();
+                if let Some(reason) = reason
+                    && !reason.is_empty()
+                {
+                    details.push_str(&format!("Reason: {reason}\n\n"));
+                }
+                let mut files = changes
+                    .keys()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>();
+                files.sort();
+                details.push_str(&format!(
+                    "{} file(s):\n{}",
+                    files.len(),
+                    files
+                        .iter()
+                        .map(|file| format!("- {file}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+                details
+            }
+            ApprovalRequest::McpElicitation { message, .. } => message.clone(),
+        };
+
+        let request_key = match variant {
+            ApprovalVariant::Exec { id, .. } => format!("exec:{id}"),
+            ApprovalVariant::ApplyPatch { id } => format!("patch:{id}"),
+            ApprovalVariant::McpElicitation {
+                server_name,
+                request_id,
+            } => format!("mcp:{server_name}:{request_id}"),
+        };
+
+        let mapped_options = options
+            .iter()
+            .filter_map(|option| {
+                ['y', 'n', 'p', 'a', 'c'].iter().find_map(|shortcut| {
+                    let key_event = KeyEvent::new(KeyCode::Char(*shortcut), KeyModifiers::NONE);
+                    if option
+                        .shortcuts()
+                        .any(|binding| binding.is_press(key_event))
+                    {
+                        Some((*shortcut, option.label.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        self.discord_bridge
+            .notify_approval_prompt(request_key, title, details, mapped_options);
     }
 
     fn apply_selection(&mut self, actual_idx: usize) {
@@ -284,6 +390,25 @@ impl BottomPaneView for ApprovalOverlay {
         if let Some(idx) = self.list.take_last_selected_index() {
             self.apply_selection(idx);
         }
+    }
+
+    fn try_handle_discord_shortcut(&mut self, request_key: &str, shortcut: char) -> bool {
+        let Some(variant) = self.current_variant.as_ref() else {
+            return false;
+        };
+        let expected = match variant {
+            ApprovalVariant::Exec { id, .. } => format!("exec:{id}"),
+            ApprovalVariant::ApplyPatch { id } => format!("patch:{id}"),
+            ApprovalVariant::McpElicitation {
+                server_name,
+                request_id,
+            } => format!("mcp:{server_name}:{request_id}"),
+        };
+        if request_key != expected {
+            return false;
+        }
+        let key_event = KeyEvent::new(KeyCode::Char(shortcut), KeyModifiers::NONE);
+        self.try_handle_shortcut(&key_event)
     }
 
     fn on_ctrl_c(&mut self) -> CancellationEvent {
@@ -594,7 +719,12 @@ mod tests {
     fn ctrl_c_aborts_and_clears_queue() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(
+            make_exec_request(),
+            tx.clone(),
+            Features::with_defaults(),
+            DiscordApprovalBridge::new(false, tx),
+        );
         view.enqueue_request(make_exec_request());
         assert_eq!(CancellationEvent::Handled, view.on_ctrl_c());
         assert!(view.queue.is_empty());
@@ -605,7 +735,12 @@ mod tests {
     fn shortcut_triggers_selection() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(
+            make_exec_request(),
+            tx.clone(),
+            Features::with_defaults(),
+            DiscordApprovalBridge::new(false, tx),
+        );
         assert!(!view.is_complete());
         view.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         // We expect at least one CodexOp message in the queue.
@@ -633,8 +768,9 @@ mod tests {
                     "echo".to_string(),
                 ])),
             },
-            tx,
+            tx.clone(),
             Features::with_defaults(),
+            DiscordApprovalBridge::new(false, tx),
         );
         view.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
         let mut saw_op = false;
@@ -671,7 +807,12 @@ mod tests {
             proposed_execpolicy_amendment: None,
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(
+            exec_request,
+            tx.clone(),
+            Features::with_defaults(),
+            DiscordApprovalBridge::new(false, tx),
+        );
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, view.desired_height(80)));
         view.render(Rect::new(0, 0, 80, view.desired_height(80)), &mut buf);
 
@@ -727,7 +868,12 @@ mod tests {
             proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(vec!["curl".into()])),
         };
 
-        let view = ApprovalOverlay::new(exec_request, tx, Features::with_defaults());
+        let view = ApprovalOverlay::new(
+            exec_request,
+            tx.clone(),
+            Features::with_defaults(),
+            DiscordApprovalBridge::new(false, tx),
+        );
         let mut buf = Buffer::empty(Rect::new(0, 0, 100, view.desired_height(100)));
         view.render(Rect::new(0, 0, 100, view.desired_height(100)), &mut buf);
 
@@ -786,7 +932,12 @@ mod tests {
     fn enter_sets_last_selected_index_without_dismissing() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
-        let mut view = ApprovalOverlay::new(make_exec_request(), tx, Features::with_defaults());
+        let mut view = ApprovalOverlay::new(
+            make_exec_request(),
+            tx.clone(),
+            Features::with_defaults(),
+            DiscordApprovalBridge::new(false, tx),
+        );
         view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(

@@ -71,6 +71,7 @@ pub mod custom_terminal;
 mod cwd_prompt;
 mod debug_config;
 mod diff_render;
+mod discord_approval;
 mod exec_cell;
 mod exec_command;
 mod external_editor;
@@ -729,6 +730,7 @@ async fn run_ratatui_app(
         prompt,
         images,
         no_alt_screen,
+        enable_discord,
         ..
     } = cli;
 
@@ -748,6 +750,7 @@ async fn run_ratatui_app(
         feedback,
         should_show_trust_screen, // Proxy to: is it a first run in this directory?
         should_prompt_windows_sandbox_nux_at_startup,
+        enable_discord,
     )
     .await;
 

@@ -78,6 +78,12 @@ pub(crate) enum AppEvent {
     /// bubbling channels through layers of widgets.
     CodexOp(codex_protocol::protocol::Op),
 
+    /// A Discord reply selected an approval shortcut for a pending request.
+    DiscordApprovalShortcut {
+        request_key: String,
+        shortcut: char,
+    },
+
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there
     /// is at most one in-flight search.

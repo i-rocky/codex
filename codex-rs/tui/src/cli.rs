@@ -110,6 +110,10 @@ pub struct Cli {
     #[arg(long = "no-alt-screen", default_value_t = false)]
     pub no_alt_screen: bool,
 
+    /// Mirror approval prompts to Discord (requires CODEX_DISCORD_BOT_TOKEN and CODEX_DISCORD_CHANNEL_ID).
+    #[arg(long = "enable-discord", default_value_t = false)]
+    pub enable_discord: bool,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 }

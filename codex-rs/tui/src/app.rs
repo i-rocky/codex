@@ -628,6 +628,7 @@ impl App {
             model: Some(self.chat_widget.current_model().to_string()),
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
             otel_manager: self.otel_manager.clone(),
+            enable_discord: false,
         }
     }
 
@@ -1092,6 +1093,7 @@ impl App {
         feedback: codex_feedback::CodexFeedback,
         is_first_run: bool,
         should_prompt_windows_sandbox_nux_at_startup: bool,
+        enable_discord: bool,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
@@ -1192,6 +1194,7 @@ impl App {
                     model: Some(model.clone()),
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
+                    enable_discord,
                 };
                 ChatWidget::new(init, thread_manager.clone())
             }
@@ -1222,6 +1225,7 @@ impl App {
                     model: config.model.clone(),
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
+                    enable_discord,
                 };
                 ChatWidget::new_from_existing(init, resumed.thread, resumed.session_configured)
             }
@@ -1253,6 +1257,7 @@ impl App {
                     model: config.model.clone(),
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
+                    enable_discord,
                 };
                 ChatWidget::new_from_existing(init, forked.thread, forked.session_configured)
             }
@@ -1506,6 +1511,7 @@ impl App {
                     model: Some(model),
                     status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
                     otel_manager: self.otel_manager.clone(),
+                    enable_discord: false,
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 self.reset_thread_event_state();
@@ -1755,6 +1761,13 @@ impl App {
             }
             AppEvent::CodexOp(op) => {
                 self.chat_widget.submit_op(op);
+            }
+            AppEvent::DiscordApprovalShortcut {
+                request_key,
+                shortcut,
+            } => {
+                self.chat_widget
+                    .handle_discord_approval_shortcut(&request_key, shortcut);
             }
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane

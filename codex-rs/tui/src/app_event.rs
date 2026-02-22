@@ -84,6 +84,11 @@ pub(crate) enum AppEvent {
         shortcut: char,
     },
 
+    /// A Discord @mention message should be treated as user input.
+    SubmitDiscordUserInput {
+        text: String,
+    },
+
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there
     /// is at most one in-flight search.

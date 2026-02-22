@@ -1769,6 +1769,9 @@ impl App {
                 self.chat_widget
                     .handle_discord_approval_shortcut(&request_key, shortcut);
             }
+            AppEvent::SubmitDiscordUserInput { text } => {
+                self.chat_widget.submit_discord_user_input(text);
+            }
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
                 self.chat_widget.on_diff_complete();

@@ -225,7 +225,7 @@ impl BottomPane {
             animations_enabled,
             context_window_percent: None,
             context_window_used_tokens: None,
-            discord_bridge: DiscordApprovalBridge::new(enable_discord, app_event_tx.clone()),
+            discord_bridge: DiscordApprovalBridge::new(enable_discord, app_event_tx),
         }
     }
 
@@ -821,6 +821,14 @@ impl BottomPane {
             self.request_redraw();
         }
         handled
+    }
+
+    pub(crate) fn notify_discord_waiting_for_input(&self, context: String) {
+        self.discord_bridge.notify_waiting_for_input(context);
+    }
+
+    pub(crate) fn notify_discord_assistant_message(&self, message: String) {
+        self.discord_bridge.notify_assistant_message(message);
     }
 
     /// Called when the agent requests user input.

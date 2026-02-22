@@ -1217,7 +1217,11 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn on_agent_message(&mut self, message: String) {
+    fn on_agent_message(&mut self, message: String, from_replay: bool) {
+        if !from_replay && !message.trim().is_empty() {
+            self.bottom_pane
+                .notify_discord_assistant_message(message.clone());
+        }
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
         if self.stream_controller.is_none() && !message.is_empty() {
@@ -1402,6 +1406,7 @@ impl ChatWidget {
         self.unified_exec_wait_streak = None;
         self.request_redraw();
 
+        let had_queued_input = !self.queued_user_messages.is_empty();
         if !from_replay && self.queued_user_messages.is_empty() {
             self.maybe_prompt_plan_implementation();
         }
@@ -1412,9 +1417,18 @@ impl ChatWidget {
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
+        let completion_response = last_agent_message.unwrap_or_default();
+        if !from_replay && !had_queued_input {
+            let context = if completion_response.trim().is_empty() {
+                "Turn completed. Codex is waiting for your next instruction.".to_string()
+            } else {
+                completion_response.clone()
+            };
+            self.bottom_pane.notify_discord_waiting_for_input(context);
+        }
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
-            response: last_agent_message.unwrap_or_default(),
+            response: completion_response,
         });
 
         self.maybe_show_pending_rate_limit_prompt();
@@ -4078,7 +4092,7 @@ impl ChatWidget {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
             EventMsg::ThreadNameUpdated(e) => self.on_thread_name_updated(e),
             EventMsg::AgentMessage(AgentMessageEvent { message, .. }) => {
-                self.on_agent_message(message)
+                self.on_agent_message(message, from_replay)
             }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
@@ -4202,7 +4216,9 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ContextCompacted(_) => {
+                self.on_agent_message("Context compacted".to_owned(), from_replay)
+            }
             EventMsg::CollabAgentSpawnBegin(_) => {}
             EventMsg::CollabAgentSpawnEnd(ev) => self.on_collab_event(multi_agents::spawn_end(ev)),
             EventMsg::CollabAgentInteractionBegin(_) => {}
@@ -7046,6 +7062,21 @@ impl ChatWidget {
         } else {
             self.submit_user_message(user_message);
         }
+    }
+
+    pub(crate) fn submit_discord_user_input(&mut self, text: String) {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+
+        self.queue_user_message(UserMessage {
+            text,
+            local_images: Vec::new(),
+            remote_image_urls: Vec::new(),
+            text_elements: Vec::new(),
+            mention_bindings: Vec::new(),
+        });
     }
 
     /// True when the UI is in the regular composer state with no running task,

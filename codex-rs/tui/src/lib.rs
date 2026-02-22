@@ -734,6 +734,16 @@ async fn run_ratatui_app(
         ..
     } = cli;
 
+    if let Err(err) =
+        crate::discord_approval::announce_startup_or_fail(enable_discord, config.cwd.as_path())
+            .await
+    {
+        restore();
+        session_log::log_session_end();
+        let _ = tui.terminal.clear();
+        return Err(color_eyre::eyre::eyre!(err));
+    }
+
     let use_alt_screen = determine_alt_screen_mode(no_alt_screen, config.tui_alternate_screen);
     tui.set_alt_screen_enabled(use_alt_screen);
 

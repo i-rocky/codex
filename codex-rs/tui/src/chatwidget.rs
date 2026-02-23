@@ -1419,12 +1419,7 @@ impl ChatWidget {
         self.maybe_send_next_queued_input();
         let completion_response = last_agent_message.unwrap_or_default();
         if !from_replay && !had_queued_input {
-            let context = if completion_response.trim().is_empty() {
-                "Turn completed. Codex is waiting for your next instruction.".to_string()
-            } else {
-                completion_response.clone()
-            };
-            self.bottom_pane.notify_discord_waiting_for_input(context);
+            self.bottom_pane.notify_discord_waiting_for_input();
         }
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {

@@ -15,10 +15,12 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_tungstenite::connect_async;
@@ -32,10 +34,11 @@ const DISCORD_GATEWAY_VERSION: &str = "10";
 const DISCORD_MESSAGE_INTENTS: i64 = (1 << 9) | (1 << 12) | (1 << 15);
 const STARTUP_HEALTHCHECK_MESSAGE_LIMIT: usize = 600;
 const PROMPT_DETAILS_LIMIT: usize = 900;
-const WAITING_CONTEXT_LIMIT: usize = 700;
 const ASSISTANT_MESSAGE_BATCH_DELAY: Duration = Duration::from_secs(2);
 const DISCORD_MAX_MESSAGE_CHARS: usize = 1900;
 const DISCORD_SCREENSHOT_COMMAND: &str = "/cc";
+const DISCORD_SYSTEM_COMMAND_PREFIX: char = '!';
+const DISCORD_SYSTEM_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const BUTTON_WAIT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const GATEWAY_RETRY_DELAY: Duration = Duration::from_secs(2);
 const SNAPSHOT_IMAGE_FILENAME: &str = "codex-cli-screen.png";
@@ -73,7 +76,8 @@ struct DiscordInstructionMessage {
 
 enum DiscordMentionCommand {
     CaptureCurrentScreen,
-    Unknown { command: String },
+    ExecuteSystemCommand { command: String },
+    UnknownSlash { command: String },
 }
 
 impl DiscordApprovalBridge {
@@ -252,7 +256,7 @@ impl DiscordApprovalBridge {
         });
     }
 
-    pub(crate) fn notify_waiting_for_input(&self, context: String) {
+    pub(crate) fn notify_waiting_for_input(&self) {
         if !self.enabled {
             return;
         }
@@ -280,9 +284,8 @@ impl DiscordApprovalBridge {
                 .await;
             }
 
-            let message = format!(
-                "**Codex is waiting for input**\n\nContext:\n```\n{}\n```\n\nMention the bot in this channel with your next instruction.",
-                truncate_for_discord(&context, WAITING_CONTEXT_LIMIT)
+            let message = String::from(
+                "**Codex is waiting for input**\n\nMention the bot in this channel with your next instruction.",
             );
             if let Err(err) =
                 send_plain_message(&client, &bot_token, &channel_id, &message, None).await
@@ -778,13 +781,24 @@ fn parse_discord_instruction_message(
 }
 
 fn parse_discord_mention_command(text: &str) -> Option<DiscordMentionCommand> {
-    let command = text.split_whitespace().next()?;
+    let trimmed = text.trim();
+    if let Some(command) = trimmed.strip_prefix(DISCORD_SYSTEM_COMMAND_PREFIX) {
+        let command = command.trim();
+        if command.is_empty() {
+            return None;
+        }
+        return Some(DiscordMentionCommand::ExecuteSystemCommand {
+            command: command.to_string(),
+        });
+    }
+
+    let command = trimmed.split_whitespace().next()?;
     if !command.starts_with('/') {
         return None;
     }
     Some(match command {
         DISCORD_SCREENSHOT_COMMAND => DiscordMentionCommand::CaptureCurrentScreen,
-        _ => DiscordMentionCommand::Unknown {
+        _ => DiscordMentionCommand::UnknownSlash {
             command: command.to_string(),
         },
     })
@@ -834,9 +848,23 @@ async fn handle_discord_mention_command(
             .map_err(|err| format!("failed to send /cc failure response: {err}"))?;
             Ok(())
         }
-        DiscordMentionCommand::Unknown { command } => {
+        DiscordMentionCommand::ExecuteSystemCommand { command } => {
+            let result = execute_discord_system_command(&command).await;
+            let response = format_discord_system_command_result(&command, result);
+            send_plain_message(
+                client,
+                bot_token,
+                channel_id,
+                &response,
+                Some(&instruction.message_id),
+            )
+            .await
+            .map_err(|err| format!("failed to send command result response: {err}"))?;
+            Ok(())
+        }
+        DiscordMentionCommand::UnknownSlash { command } => {
             let message = format!(
-                "Unknown command `{command}`. Supported commands: `{DISCORD_SCREENSHOT_COMMAND}`."
+                "Unknown command `{command}`. Supported slash commands: `{DISCORD_SCREENSHOT_COMMAND}`. Use `{DISCORD_SYSTEM_COMMAND_PREFIX}<command>` to run a system command."
             );
             send_plain_message(
                 client,
@@ -848,6 +876,101 @@ async fn handle_discord_mention_command(
             .await
             .map_err(|err| format!("failed to send unknown command response: {err}"))?;
             Ok(())
+        }
+    }
+}
+
+enum DiscordSystemCommandResult {
+    Completed {
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    },
+    TimedOut,
+    FailedToStart(String),
+}
+
+async fn execute_discord_system_command(command: &str) -> DiscordSystemCommandResult {
+    let mut process = if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(command);
+        cmd
+    } else {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-lc").arg(command);
+        cmd
+    };
+    process.kill_on_drop(true);
+    process.stdin(Stdio::null());
+    process.stdout(Stdio::piped());
+    process.stderr(Stdio::piped());
+
+    let output = match tokio::time::timeout(DISCORD_SYSTEM_COMMAND_TIMEOUT, process.output()).await
+    {
+        Ok(result) => result,
+        Err(_) => return DiscordSystemCommandResult::TimedOut,
+    };
+
+    match output {
+        Ok(output) => DiscordSystemCommandResult::Completed {
+            exit_code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        },
+        Err(err) => DiscordSystemCommandResult::FailedToStart(err.to_string()),
+    }
+}
+
+fn format_discord_system_command_result(
+    command: &str,
+    result: DiscordSystemCommandResult,
+) -> String {
+    match result {
+        DiscordSystemCommandResult::Completed {
+            exit_code,
+            stdout,
+            stderr,
+        } => {
+            let status = exit_code
+                .map(|code| {
+                    if code == 0 {
+                        format!("success (exit {code})")
+                    } else {
+                        format!("failed (exit {code})")
+                    }
+                })
+                .unwrap_or_else(|| "finished (no exit code)".to_string());
+            let mut message =
+                format!("Ran `{DISCORD_SYSTEM_COMMAND_PREFIX}{command}`\nStatus: {status}");
+
+            let stdout = stdout.trim();
+            if !stdout.is_empty() {
+                message.push_str(&format!(
+                    "\n\nstdout:\n```\n{}\n```",
+                    truncate_for_discord(stdout, 850)
+                ));
+            }
+
+            let stderr = stderr.trim();
+            if !stderr.is_empty() {
+                message.push_str(&format!(
+                    "\n\nstderr:\n```\n{}\n```",
+                    truncate_for_discord(stderr, 850)
+                ));
+            }
+
+            if stdout.is_empty() && stderr.is_empty() {
+                message.push_str("\n\n(no output)");
+            }
+
+            message
+        }
+        DiscordSystemCommandResult::TimedOut => format!(
+            "Command `{DISCORD_SYSTEM_COMMAND_PREFIX}{command}` timed out after {}s.",
+            DISCORD_SYSTEM_COMMAND_TIMEOUT.as_secs()
+        ),
+        DiscordSystemCommandResult::FailedToStart(err) => {
+            format!("Could not run `{DISCORD_SYSTEM_COMMAND_PREFIX}{command}`: {err}")
         }
     }
 }
@@ -1301,13 +1424,28 @@ mod tests {
         let command = parse_discord_mention_command("/unknown").expect("expected command parsing");
         assert!(matches!(
             command,
-            DiscordMentionCommand::Unknown { command } if command == "/unknown"
+            DiscordMentionCommand::UnknownSlash { command } if command == "/unknown"
         ));
     }
 
     #[test]
     fn parse_discord_mention_command_ignores_non_commands() {
         let command = parse_discord_mention_command("normal prompt");
+        assert!(command.is_none());
+    }
+
+    #[test]
+    fn parse_discord_mention_command_parses_system_command() {
+        let command = parse_discord_mention_command("!ls -la").expect("expected command parsing");
+        assert!(matches!(
+            command,
+            DiscordMentionCommand::ExecuteSystemCommand { command } if command == "ls -la"
+        ));
+    }
+
+    #[test]
+    fn parse_discord_mention_command_ignores_empty_system_command() {
+        let command = parse_discord_mention_command("!   ");
         assert!(command.is_none());
     }
 

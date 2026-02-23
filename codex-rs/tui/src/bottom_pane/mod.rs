@@ -823,8 +823,8 @@ impl BottomPane {
         handled
     }
 
-    pub(crate) fn notify_discord_waiting_for_input(&self, context: String) {
-        self.discord_bridge.notify_waiting_for_input(context);
+    pub(crate) fn notify_discord_waiting_for_input(&self) {
+        self.discord_bridge.notify_waiting_for_input();
     }
 
     pub(crate) fn notify_discord_assistant_message(&self, message: String) {
